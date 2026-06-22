@@ -1,12 +1,4 @@
-"""
-Application Streamlit de mise en production des trois modeles du projet.
 
-Avant de lancer l'application :
-    python partie1_mlp.py
-    python partie2_cnn.py
-    python partie3_seq2seq.py
-    streamlit run app.py
-"""
 
 from __future__ import annotations
 
@@ -18,15 +10,18 @@ import streamlit as st
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-
+import tempfile
+import cv2
 from partie1_mlp import BreastCancerMLP
 from partie2_cnn import CIFAR10_CLASSES, LeNetCIFAR
 from partie3_seq2seq import Vocabulary, build_model
+from partie4_lstm_hybride import ModeleHybrideCNNLSTM
 
 
 MLP_PATH = Path("mlp_breast_cancer.pth")
 CNN_PATH = Path("lenet_cifar.pth")
 SEQ2SEQ_PATH = Path("seq2seq_model.pth")
+HYBRIDE_PATH = Path("hybride_model.pth")
 
 
 st.set_page_config(page_title="Projet Deep Learning EMSI", page_icon="DL", layout="wide")
@@ -61,17 +56,29 @@ def load_seq2seq():
     checkpoint = torch.load(SEQ2SEQ_PATH, map_location=device(), weights_only=False)
     src_vocab = Vocabulary(checkpoint["src_token_to_idx"], checkpoint["src_idx_to_token"])
     tgt_vocab = Vocabulary(checkpoint["tgt_token_to_idx"], checkpoint["tgt_idx_to_token"])
+    
+    saved_cell_type = checkpoint.get("cell_type", "GRU")
+    
     model = build_model(
         src_vocab_size=len(src_vocab.idx_to_token),
         tgt_vocab_size=len(tgt_vocab.idx_to_token),
         device=device(),
         embedding_dim=checkpoint["embedding_dim"],
         hidden_dim=checkpoint["hidden_dim"],
-        cell_type=checkpoint.get("cell_type", "GRU"),
+        cell_type=saved_cell_type,
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model, src_vocab, tgt_vocab
+
+
+@st.cache_resource
+def load_hybride():
+    checkpoint = torch.load(HYBRIDE_PATH, map_location=device(), weights_only=False)
+    model = ModeleHybrideCNNLSTM(num_classes=10).to(device())
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    return model
 
 
 def checkpoint_missing(path: Path) -> bool:
@@ -173,7 +180,7 @@ def page_cnn() -> None:
 
 
 def page_seq2seq() -> None:
-    st.title("Seq2Seq GRU - Traduction automatique")
+    st.title("Seq2Seq - Traduction automatique")
     if checkpoint_missing(SEQ2SEQ_PATH):
         return
 
@@ -192,17 +199,86 @@ def page_seq2seq() -> None:
         st.caption("Inference auto-regressive sans teacher forcing, avec decodage glouton.")
 
 
+def page_hybride() -> None:
+    st.title("Hybride CNN + LSTM - Séquence Vidéo")
+    if checkpoint_missing(HYBRIDE_PATH):
+        st.info("💡 Astuce : Exécutez d'abord `python partie4_lstm_hybride.py` pour générer le modèle.")
+        return
+
+    model = load_hybride()
+    
+    st.write("Le modèle découpe votre vidéo pour extraire un tenseur 5D : `(batch, frames, canaux, hauteur, largeur)`")
+    
+    # 1. Bouton pour uploader une vraie vidéo
+    uploaded_video = st.file_uploader("Importez une courte vidéo (.mp4, .mov)", type=["mp4", "mov", "avi"])
+    
+    if uploaded_video is not None:
+        # Afficher la vidéo sur le site
+        st.video(uploaded_video)
+        
+        if st.button("Lancer l'analyse du flux vidéo"):
+            # 2. Sauvegarder la vidéo temporairement pour qu'OpenCV puisse la lire
+            tfile = tempfile.NamedTemporaryFile(delete=False) 
+            tfile.write(uploaded_video.read())
+            
+            # 3. Extraire les frames avec OpenCV
+            cap = cv2.VideoCapture(tfile.name)
+            frames = []
+            transform = transforms.ToTensor() # Transforme en [C, H, W] et normalise entre 0 et 1
+            
+            while len(frames) < 10:
+                ret, frame = cap.read()
+                if not ret:
+                    break # Fin de la vidéo
+                
+                # Redimensionner en 32x32 pixels (comme CIFAR)
+                frame_resized = cv2.resize(frame, (32, 32))
+                # OpenCV lit en BGR (Bleu-Vert-Rouge), on convertit en RGB
+                frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                
+                # Convertir l'image en tenseur PyTorch
+                tensor_frame = transform(frame_rgb)
+                frames.append(tensor_frame)
+                
+            cap.release()
+            
+            # Vérification de sécurité
+            if len(frames) < 10:
+                st.error(f"La vidéo est trop courte ! Il faut au moins 10 frames (trouvé {len(frames)}).")
+                return
+            
+            # 4. Assembler le Tenseur 5D final
+            # On empile les 10 images -> dimension devient [10, 3, 32, 32]
+            video_tensor = torch.stack(frames) 
+            # On ajoute la dimension du batch au début -> dimension devient [1, 10, 3, 32, 32]
+            video_reelle = video_tensor.unsqueeze(0).to(device())
+            
+            # 5. Envoyer le vrai tenseur dans le modèle
+            with torch.no_grad():
+                logits = model(video_reelle)
+                probabilite = torch.softmax(logits, dim=1).max().item()
+                classe = logits.argmax().item()
+                
+            st.success(f"Analyse réussie ! Votre vidéo a été convertie en tenseur {list(video_reelle.shape)} et a traversé le modèle.")
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Classe prédite", f"Classe {classe}")
+            col2.metric("Niveau d'activation", f"{probabilite:.2%}")
+
+
 def main() -> None:
     st.sidebar.title("Navigation")
-    choice = st.sidebar.radio("Modele", ["MLP tabulaire", "CNN image", "Seq2Seq texte"])
+    choice = st.sidebar.radio("Modele", ["MLP tabulaire", "CNN image", "Seq2Seq texte", "Hybride vidéo"])
     st.sidebar.caption(f"Device: {device()}")
 
     if choice == "MLP tabulaire":
         page_mlp()
     elif choice == "CNN image":
         page_cnn()
-    else:
+    elif choice == "Seq2Seq texte":
         page_seq2seq()
+    else:
+        page_hybride()
 
 
 if __name__ == "__main__":
