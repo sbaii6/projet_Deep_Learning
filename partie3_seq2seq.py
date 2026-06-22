@@ -1,17 +1,3 @@
-
-"""
-Partie 3 - Systeme Seq2Seq GRU pour traduction automatique.
-
-Le script definit une architecture encodeur-decodeur recurrente :
-- tokenisation simple et vocabulaire avec tokens speciaux ;
-- encodeur/decodeur recurrent configurable en GRU ou LSTM ;
-- attention additive de Bahdanau pour mieux conserver le contexte source ;
-- teacher forcing pendant l'entrainement ;
-- CrossEntropyLoss(ignore_index=PAD) pour ignorer le padding ;
-- gradient clipping pour stabiliser la retropropagation a travers le temps ;
-- sauvegarde du state_dict et des vocabulaires dans seq2seq_model.pth.
-"""
-
 from __future__ import annotations
 
 import random
