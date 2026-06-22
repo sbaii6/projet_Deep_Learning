@@ -1,13 +1,4 @@
-"""
-Partie 2 - CNN inspire de LeNet sur CIFAR-10.
 
-Le script applique les bonnes pratiques CNN vues dans la fiche :
-- conservation de la structure spatiale des images ;
-- convolutions locales avec partage de poids ;
-- padding, pooling et couches fully-connected finales ;
-- CrossEntropyLoss pour une classification multi-classe ;
-- visualisation des cartes de caracteristiques de la premiere convolution.
-"""
 
 from __future__ import annotations
 
