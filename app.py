@@ -1,9 +1,6 @@
-
-
 from __future__ import annotations
 
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -12,6 +9,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 import tempfile
 import cv2
+
 from partie1_mlp import BreastCancerMLP
 from partie2_cnn import CIFAR10_CLASSES, LeNetCIFAR
 from partie3_seq2seq import Vocabulary, build_model
@@ -75,7 +73,8 @@ def load_seq2seq():
 @st.cache_resource
 def load_hybride():
     checkpoint = torch.load(HYBRIDE_PATH, map_location=device(), weights_only=False)
-    model = ModeleHybrideCNNLSTM(num_classes=10).to(device())
+    # ⚠️ Changement vital ici : num_classes=2 pour correspondre au nouvel entraînement
+    model = ModeleHybrideCNNLSTM(num_classes=2).to(device())
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model
@@ -209,61 +208,51 @@ def page_hybride() -> None:
     
     st.write("Le modèle découpe votre vidéo pour extraire un tenseur 5D : `(batch, frames, canaux, hauteur, largeur)`")
     
-    # 1. Bouton pour uploader une vraie vidéo
     uploaded_video = st.file_uploader("Importez une courte vidéo (.mp4, .mov)", type=["mp4", "mov", "avi"])
     
     if uploaded_video is not None:
-        # Afficher la vidéo sur le site
         st.video(uploaded_video)
         
         if st.button("Lancer l'analyse du flux vidéo"):
-            # 2. Sauvegarder la vidéo temporairement pour qu'OpenCV puisse la lire
             tfile = tempfile.NamedTemporaryFile(delete=False) 
             tfile.write(uploaded_video.read())
             
-            # 3. Extraire les frames avec OpenCV
             cap = cv2.VideoCapture(tfile.name)
             frames = []
-            transform = transforms.ToTensor() # Transforme en [C, H, W] et normalise entre 0 et 1
+            transform = transforms.ToTensor() 
             
             while len(frames) < 10:
                 ret, frame = cap.read()
                 if not ret:
-                    break # Fin de la vidéo
+                    break 
                 
-                # Redimensionner en 32x32 pixels (comme CIFAR)
                 frame_resized = cv2.resize(frame, (32, 32))
-                # OpenCV lit en BGR (Bleu-Vert-Rouge), on convertit en RGB
                 frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
-                
-                # Convertir l'image en tenseur PyTorch
                 tensor_frame = transform(frame_rgb)
                 frames.append(tensor_frame)
                 
             cap.release()
             
-            # Vérification de sécurité
             if len(frames) < 10:
                 st.error(f"La vidéo est trop courte ! Il faut au moins 10 frames (trouvé {len(frames)}).")
                 return
             
-            # 4. Assembler le Tenseur 5D final
-            # On empile les 10 images -> dimension devient [10, 3, 32, 32]
             video_tensor = torch.stack(frames) 
-            # On ajoute la dimension du batch au début -> dimension devient [1, 10, 3, 32, 32]
             video_reelle = video_tensor.unsqueeze(0).to(device())
             
-            # 5. Envoyer le vrai tenseur dans le modèle
             with torch.no_grad():
                 logits = model(video_reelle)
-                probabilite = torch.softmax(logits, dim=1).max().item()
+                probabilities = torch.softmax(logits, dim=1)
                 classe = logits.argmax().item()
+                probabilite = probabilities[0][classe].item()
                 
             st.success(f"Analyse réussie ! Votre vidéo a été convertie en tenseur {list(video_reelle.shape)} et a traversé le modèle.")
             
             col1, col2 = st.columns(2)
-            col1.metric("Classe prédite", f"Classe {classe}")
-            col2.metric("Niveau d'activation", f"{probabilite:.2%}")
+            interpretation = "Vidéo Sombre / Nuit" if classe == 0 else "Vidéo Lumineuse / Jour"
+            
+            col1.metric("Analyse de la scène", interpretation)
+            col2.metric("Confiance du modèle", f"{probabilite:.2%}")
 
 
 def main() -> None:

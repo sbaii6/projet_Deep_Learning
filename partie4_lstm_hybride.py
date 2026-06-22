@@ -1,12 +1,3 @@
-"""
-Partie 4 - Modèle hybride CNN + LSTM (Late Fusion) avec apprentissage.
-
-Ce script démontre :
-1. L'extraction spatiale via un CNN sur chaque frame.
-2. La modélisation temporelle via un LSTM sur la séquence de frames.
-3. Une boucle d'entraînement complète sur des données vidéo synthétiques.
-"""
-
 from __future__ import annotations
 
 import torch
@@ -30,36 +21,6 @@ class ExtracteurSpatialCNN(nn.Module):
         x = self.pool(self.relu(self.conv2(x)))
         x = self.pool(self.relu(self.conv3(x)))
         return x
-
-
-class ModeleLSTM(nn.Module):
-    """LSTM pour modéliser l'évolution temporelle des caractéristiques."""
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int = 128,
-        output_size: int = 1,
-        num_layers: int = 1,
-        dropout: float = 0.20,
-    ) -> None:
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-        )
-        self.regresseur = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size, output_size),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output, (hidden, cell) = self.lstm(x)
-        # On récupère le dernier état caché temporel
-        dernier_etat = output[:, -1, :]
-        return self.regresseur(dernier_etat)
 
 
 class ModeleHybrideCNNLSTM(nn.Module):
@@ -101,29 +62,28 @@ class ModeleHybrideCNNLSTM(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, channels, height, width = x.shape
-        
-        # 1. Fusionner batch et temps pour le CNN
         images = x.reshape(batch_size * sequence_length, channels, height, width)
         cartes = self.extracteur_spatial(images)
         vecteurs = self.projection(cartes)
-        
-        # 2. Reconstruire la séquence pour le LSTM
         sequence_visuelle = vecteurs.reshape(batch_size, sequence_length, -1)
         output, (hidden, cell) = self.lstm(sequence_visuelle)
         dernier_etat = output[:, -1, :]
-        
         return self.classifieur(dernier_etat)
 
 
-# --- SECTION APPRENTISSAGE (TRAINING) ---
-
 class VideoDataset(Dataset):
-    """Générateur de données vidéo synthétiques pour l'entraînement."""
-    def __init__(self, num_samples: int = 200, seq_len: int = 10, num_classes: int = 10):
-        # On génère des tenseurs aléatoires simulant des vidéos (frames 32x32 RGB)
-        self.data = torch.randn(num_samples, seq_len, 3, 32, 32)
-        # On assigne des étiquettes (classes de 0 à 9)
+    """Génère des vidéos soit très sombres (Classe 0), soit très claires (Classe 1)."""
+    def __init__(self, num_samples: int = 300, seq_len: int = 10, num_classes: int = 2):
         self.labels = torch.randint(0, num_classes, (num_samples,))
+        self.data = torch.zeros(num_samples, seq_len, 3, 32, 32)
+        
+        for i in range(num_samples):
+            if self.labels[i] == 0:
+                # Classe 0 : Vidéo Sombre (valeurs de pixels basses proches de 0)
+                self.data[i] = torch.abs(torch.randn(seq_len, 3, 32, 32) * 0.1)
+            else:
+                # Classe 1 : Vidéo Lumineuse (valeurs de pixels hautes proches de 1)
+                self.data[i] = torch.clamp(torch.ones(seq_len, 3, 32, 32) - torch.abs(torch.randn(seq_len, 3, 32, 32) * 0.1), 0.0, 1.0)
 
     def __len__(self) -> int:
         return len(self.data)
@@ -133,59 +93,33 @@ class VideoDataset(Dataset):
 
 
 def entrainer_modele_hybride() -> None:
-    print("🚀 Initialisation de l'entraînement du modèle hybride CNN+LSTM...")
+    print("🚀 Entraînement du modèle sur l'analyse de la luminosité (2 classes)...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # 1. Préparation des données
-    dataset = VideoDataset(num_samples=400, seq_len=10, num_classes=10)
+    dataset = VideoDataset(num_samples=300, seq_len=10, num_classes=2)
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
     
-    # 2. Initialisation du modèle, de la perte et de l'optimiseur
-    model = ModeleHybrideCNNLSTM(num_classes=10).to(device)
+    model = ModeleHybrideCNNLSTM(num_classes=2).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    # 3. Boucle d'entraînement (Training Loop)
-    epochs = 5
-    model.train()
-    
-    for epoch in range(epochs):
-        total_loss = 0.0
-        correct_preds = 0
-        
+    for epoch in range(5):
+        model.train()
+        total_loss, correct = 0.0, 0
         for videos, labels in dataloader:
             videos, labels = videos.to(device), labels.to(device)
-            
-            # Remise à zéro des gradients
             optimizer.zero_grad()
-            
-            # Propagation avant (Forward)
             outputs = model(videos)
             loss = criterion(outputs, labels)
-            
-            # Rétropropagation (Backward)
             loss.backward()
-            
-            # Gradient Clipping pour stabiliser le LSTM
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            # Mise à jour des poids
             optimizer.step()
             
             total_loss += loss.item()
-            predictions = outputs.argmax(dim=1)
-            correct_preds += (predictions == labels).sum().item()
+            correct += (outputs.argmax(dim=1) == labels).sum().item()
             
-        avg_loss = total_loss / len(dataloader)
-        accuracy = correct_preds / len(dataset)
-        print(f"Époque [{epoch+1}/{epochs}] | Loss: {avg_loss:.4f} | Accuracy: {accuracy:.2%}")
+        print(f"Époque [{epoch+1}/5] | Loss: {total_loss/len(dataloader):.4f} | Accuracy: {correct/len(dataset):.2%}")
         
-    # 4. Sauvegarde des poids entraînés
-    print("\n💾 Sauvegarde des poids entraînés pour Streamlit...")
-    torch.save({
-        "model_state_dict": model.state_dict()
-    }, "hybride_model.pth")
-    print("✅ Entraînement terminé ! Le fichier 'hybride_model.pth' est prêt.")
+    torch.save({"model_state_dict": model.state_dict()}, "hybride_model.pth")
+    print("✅ Modèle sauvegardé avec succès pour deux classes (0: Sombre, 1: Lumineux) !")
 
 
 if __name__ == "__main__":
