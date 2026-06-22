@@ -1,14 +1,4 @@
-"""
-Partie 1 - MLP PyTorch sur Breast Cancer Wisconsin.
 
-Ce script couvre les points demandes dans le cahier des charges :
-- chargement et normalisation d'un dataset tabulaire reel ;
-- definition d'un MLP personnalise avec nn.Module ;
-- initialisation Xavier uniforme ;
-- entrainement avec BCEWithLogitsLoss, adaptee a une classification binaire ;
-- evaluation par Accuracy, Precision, Recall, F1-score et matrice de confusion ;
-- sauvegarde d'un state_dict et des metadonnees utiles pour l'application Streamlit.
-"""
 
 from __future__ import annotations
 
